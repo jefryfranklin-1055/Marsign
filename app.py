@@ -4,53 +4,45 @@ import datetime as dt
 import time
 import yfinance as yf
 
-# Streamlit app setup
 st.title("Nifty Options Signal Analyzer")
-st.write("Fetches data from yfinance (NSE fallback disabled due to blocks) and analyzes every ~5 minutes. Signal: Buy CE (up) or PE (down). For educational use only.")
+st.write("Click 'Update Signal' for fresh data. For educational use only.")
 
-# Session state for timing
+# Session state
 if "last_run" not in st.session_state:
-    st.session_state.last_run = time.time()  # Initialize to now
-    st.session_state.signal = "Initializing..."
+    st.session_state.last_run = 0
+    st.session_state.signal = "Click Update to start"
     st.session_state.details = {}
 
-# Main function to run analysis
 def run_analysis():
-    st.session_state.last_run = time.time()  # Always update timestamp
+    st.session_state.last_run = time.time()
     try:
-        # Fetch spot and VIX via yfinance (primary, no NSE needed)
-        st.info("Fetching via yfinance...")
+        st.info("Fetching data...")
         nifty = yf.Ticker("^NSEI")
         vix_ticker = yf.Ticker("^INDIAVIX")
         
-        spot_hist = nifty.history(period="1d")
+        spot_hist = nifty.history(period="1d", timeout=30)  # 30s timeout
         if spot_hist.empty:
-            raise ValueError("No spot data available (market closed?)")
+            raise ValueError("No spot data (market closed?)")
         spot = spot_hist['Close'].iloc[-1]
         
-        vix_hist = vix_ticker.history(period="1d")
+        vix_hist = vix_ticker.history(period="1d", timeout=30)
         if vix_hist.empty:
-            raise ValueError("No VIX data available")
+            raise ValueError("No VIX data")
         vix = vix_hist['Close'].iloc[-1]
         
-        st.success(f"Spot: {spot:.2f}, VIX: {vix:.2f}")
-        
-        # Historical 5-min data via yfinance
-        hist = nifty.history(period="1d", interval="5m")
+        # Historical 5-min
+        hist = nifty.history(period="1d", interval="5m", timeout=30)
         df = hist.reset_index()[['Datetime', 'Open', 'High', 'Low', 'Close']]
         df.rename(columns={'Datetime': 'date'}, inplace=True)
         
-        # OI fallback: Disabled due to NSE blocks; neutral impact
-        ce_oi = 0
-        pe_oi = 0
-        expiry = "N/A"
-        atm_strike = round(spot / 50) * 50
-        pcr = 1.0  # Neutral PCR
-        bullish_oi = False
-        bearish_oi = False
-        st.warning("OI analysis disabled (NSE cloud blocks). Using neutral scores.")
+        # OI neutral (disabled for cloud)
+        ce_oi = pe_oi = 0
+        pcr = 1.0
+        bullish_oi = bearish_oi = False
+        expiry = atm_strike = "N/A"
+        st.warning("OI disabled (use local/Indian host for NSE). Neutral scores.")
         
-        # Candlestick and pattern analysis (if enough data)
+        # Candlesticks if data available
         if len(df) >= 3:
             last_candle = df.iloc[-1]
             bullish_candle = last_candle['Close'] > last_candle['Open']
@@ -62,17 +54,12 @@ def run_analysis():
             
             up_trend = (df.iloc[-1]['Close'] > df.iloc[-2]['Close']) and \
                        (df.iloc[-2]['Close'] > df.iloc[-3]['Close'])
-            st.success("Candlestick analysis complete.")
         else:
-            st.warning(f"Insufficient 5-min data ({len(df)} bars). Skipping candlesticks; neutral scores.")
-            bullish_candle = False
-            bullish_engulfing = False
-            up_trend = False
+            bullish_candle = bullish_engulfing = up_trend = False
         
         low_vol = vix < 15
         high_vol = vix > 20
         
-        # Scores and signal (OI neutral, adjust for missing candles)
         bullish_score = int(bullish_candle) + int(bullish_engulfing) + int(up_trend) + int(low_vol) + int(bullish_oi)
         bearish_score = int(not bullish_candle) + int(not bullish_engulfing) + int(not up_trend) + int(high_vol) + int(bearish_oi)
         
@@ -83,7 +70,6 @@ def run_analysis():
         else:
             signal = "Neutral - No clear signal"
         
-        # Store results
         st.session_state.signal = signal
         st.session_state.details = {
             "Spot": f"{spot:.2f}",
@@ -96,17 +82,17 @@ def run_analysis():
             "Bullish Score": bullish_score,
             "Bearish Score": bearish_score
         }
+        st.success("Update complete!")
     
     except Exception as e:
         st.session_state.signal = f"Error: {str(e)}"
-        st.error(f"Detailed error: {e}")
+        st.error(f"Details: {e}")
 
-# Run analysis if 5 mins passed or first time
-current_time = time.time()
-if current_time - st.session_state.last_run >= 300:
+# Update button (manual to avoid loops)
+if st.button("Update Signal (every 5 min recommended)"):
     run_analysis()
 
-# Display results
+# Display
 st.header("Latest Signal")
 st.subheader(st.session_state.signal)
 
@@ -114,10 +100,4 @@ st.header("Details")
 for key, value in st.session_state.details.items():
     st.write(f"**{key}:** {value}")
 
-st.write(f"**Last updated:** {dt.datetime.fromtimestamp(st.session_state.last_run).strftime('%Y-%m-%d %H:%M:%S IST')}")
-st.write("Refreshing in ~5 minutes... (Auto-updates on new data)")
-
-# Auto-rerun after delay
-time.sleep(1)
-if current_time - st.session_state.last_run >= 300:
-    st.rerun()
+st.write(f"**Last updated:** {dt.datetime.fromtimestamp(st.session_state.last_run).strftime('%Y-%m-%d %H:%M:%S IST') if st.session_state.last_run > 0 else 'Not run yet'}")
