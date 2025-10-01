@@ -6,7 +6,7 @@ import datetime as dt
 import time
 import yfinance as yf
 
-# Function to initialize session for NSE
+# Function to initialize session for NSE (kept for option chain attempt)
 def get_nse_session():
     session = requests.Session()
     session.headers.update({
@@ -18,52 +18,73 @@ def get_nse_session():
     session.get('https://www.nseindia.com')
     return session
 
-# Function to fetch Nifty spot price from NSE
+# Updated: Fetch Nifty spot using yfinance (fallback if NSE fails)
 def get_nifty_spot(session):
-    url = 'https://www.nseindia.com/api/quote-equity?symbol=NIFTY%2050'
-    response = session.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        return data['priceInfo']['lastPrice']
-    else:
-        raise ValueError("Failed to fetch Nifty spot")
+    try:
+        url = 'https://www.nseindia.com/api/quote-equity?symbol=NIFTY%2050'
+        response = session.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            return data['priceInfo']['lastPrice']
+        else:
+            st.warning(f"NSE spot fetch failed (code: {response.status_code}). Using yfinance fallback.")
+    except:
+        pass
+    # Fallback to yfinance
+    nifty = yf.Ticker("^NSEI")
+    hist = nifty.history(period="1d")
+    if not hist.empty:
+        return hist['Close'].iloc[-1]
+    raise ValueError("Failed to fetch Nifty spot from all sources")
 
-# Function to fetch India VIX from NSE
+# Updated: Fetch VIX using yfinance (fallback if NSE fails)
 def get_vix(session):
-    url = 'https://www.nseindia.com/api/quote-equity?symbol=INDIA%20VIX'
-    response = session.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        return data['priceInfo']['lastPrice']
-    else:
-        raise ValueError("Failed to fetch VIX")
+    try:
+        url = 'https://www.nseindia.com/api/quote-equity?symbol=INDIA%20VIX'
+        response = session.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            return data['priceInfo']['lastPrice']
+        else:
+            st.warning(f"NSE VIX fetch failed (code: {response.status_code}). Using yfinance fallback.")
+    except:
+        pass
+    # Fallback to yfinance
+    vix_ticker = yf.Ticker("^INDIAVIX")
+    hist = vix_ticker.history(period="1d")
+    if not hist.empty:
+        return hist['Close'].iloc[-1]
+    raise ValueError("Failed to fetch VIX from all sources")
 
-# Function to fetch option chain and get ATM CE/PE OI and nearest expiry
+# Function to fetch option chain (keep NSE, but handle failure gracefully)
 def get_option_data(session, spot):
-    url = 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY'
-    response = session.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        records = data['records']
-        expiry = records['expiryDates'][0]  # Nearest expiry
-        atm_strike = round(spot / 50) * 50
-        
-        ce_oi = 0
-        pe_oi = 0
-        for opt in records['data']:
-            if opt['expiryDate'] == expiry and opt['strikePrice'] == atm_strike:
-                if 'CE' in opt:
-                    ce_oi = opt['CE']['openInterest']
-                if 'PE' in opt:
-                    pe_oi = opt['PE']['openInterest']
-        
-        return expiry, atm_strike, ce_oi, pe_oi
-    else:
-        raise ValueError("Failed to fetch option chain")
+    try:
+        url = 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY'
+        response = session.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            records = data['records']
+            expiry = records['expiryDates'][0]
+            atm_strike = round(spot / 50) * 50
+            ce_oi = 0
+            pe_oi = 0
+            for opt in records['data']:
+                if opt['expiryDate'] == expiry and opt['strikePrice'] == atm_strike:
+                    if 'CE' in opt:
+                        ce_oi = opt['CE']['openInterest']
+                    if 'PE' in opt:
+                        pe_oi = opt['PE']['openInterest']
+            return expiry, atm_strike, ce_oi, pe_oi
+        else:
+            st.warning(f"Option chain fetch failed (code: {response.status_code}). Disabling OI analysis.")
+    except:
+        st.warning("Option chain fetch failed. Disabling OI analysis.")
+    # Fallback: No OI data
+    return None, None, 0, 0
 
 # Streamlit app setup
 st.title("Nifty Options Signal Analyzer")
-st.write("Fetches data from NSE and analyzes every ~5 minutes. Signal: Buy CE (up) or PE (down). For educational use only.")
+st.write("Fetches data from NSE/yfinance and analyzes every ~5 minutes. Signal: Buy CE (up) or PE (down). For educational use only.")
 
 # Session state for timing
 if "last_run" not in st.session_state:
@@ -73,6 +94,7 @@ if "last_run" not in st.session_state:
 
 # Main function to run analysis
 def run_analysis():
+    st.session_state.last_run = time.time()  # Update timestamp always, even on partial failure
     try:
         session = get_nse_session()
         
@@ -81,10 +103,10 @@ def run_analysis():
         vix = get_vix(session)
         expiry, atm_strike, ce_oi, pe_oi = get_option_data(session, spot)
         
-        # OI Analysis
+        # OI Analysis (skip if OI is 0)
         pcr = pe_oi / ce_oi if ce_oi > 0 else 0
-        bullish_oi = pcr < 0.5
-        bearish_oi = pcr > 1.0
+        bullish_oi = pcr < 0.5 if ce_oi > 0 else False
+        bearish_oi = pcr > 1.0 if ce_oi > 0 else False
         
         # Historical data via yfinance
         nifty = yf.Ticker("^NSEI")
@@ -125,15 +147,14 @@ def run_analysis():
         st.session_state.details = {
             "Spot": spot,
             "VIX": vix,
-            "Expiry": expiry,
-            "ATM Strike": atm_strike,
+            "Expiry": expiry if expiry else "N/A",
+            "ATM Strike": atm_strike if atm_strike else "N/A",
             "CE OI": ce_oi,
             "PE OI": pe_oi,
-            "PCR": round(pcr, 2),
+            "PCR": round(pcr, 2) if ce_oi > 0 else "N/A",
             "Bullish Score": bullish_score,
             "Bearish Score": bearish_score
         }
-        st.session_state.last_run = time.time()
     
     except Exception as e:
         st.session_state.signal = f"Error: {str(e)} - Retrying soon..."
@@ -154,7 +175,7 @@ for key, value in st.session_state.details.items():
 st.write(f"Last updated: {dt.datetime.fromtimestamp(st.session_state.last_run).strftime('%Y-%m-%d %H:%M:%S')}")
 st.write("Refreshing in ~5 minutes...")
 
-# Auto-rerun after delay (approximates 5 min update)
-time.sleep(1)  # Small delay to avoid rapid loops
+# Auto-rerun after delay
+time.sleep(1)
 if current_time - st.session_state.last_run >= 300:
     st.rerun()
