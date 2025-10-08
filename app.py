@@ -51,9 +51,10 @@ def detect_patterns(df):
     patterns['shooting_star'] = (upper_shadow > 2 * body) and (lower_shadow < body) and (body > 0)  # Bearish reversal
     patterns['doji'] = body <= 0.1 * total_range  # Indecision
     
-    # Double bottom/top (simple 3-bar check)
-    patterns['double_bottom'] = (df.iloc[-3]['Low'] ≈ df.iloc[-1]['Low']) and (df.iloc[-2]['Low'] > df.iloc[-1]['Low'])
-    patterns['double_top'] = (df.iloc[-3]['High'] ≈ df.iloc[-1]['High']) and (df.iloc[-2]['High'] < df.iloc[-1]['High'])
+    # Double bottom/top (simple 3-bar check with tolerance)
+    tolerance = 0.005  # 0.5% tolerance for approximate equality
+    patterns['double_bottom'] = (abs(df.iloc[-3]['Low'] - df.iloc[-1]['Low']) / df.iloc[-1]['Low'] < tolerance) and (df.iloc[-2]['Low'] > df.iloc[-1]['Low'])
+    patterns['double_top'] = (abs(df.iloc[-3]['High'] - df.iloc[-1]['High']) / df.iloc[-1]['High'] < tolerance) and (df.iloc[-2]['High'] < df.iloc[-1]['High'])
     
     return patterns
 
