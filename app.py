@@ -4,6 +4,7 @@ import datetime as dt
 import time
 import yfinance as yf
 from datetime import timedelta
+import pytz  # For IST timezone
 
 st.title("Nifty Options Signal Analyzer")
 st.write("Monitors trading session (9:15 AM - 3:30 PM IST) and notifies on solid moves only.")
@@ -17,11 +18,15 @@ if "last_run" not in st.session_state:
 
 def is_trading_session(current_time):
     """Check if within NSE trading hours (9:15 AM - 3:30 PM IST, Mon-Fri)"""
-    if current_time.weekday() > 4:  # Sat/Sun
+    # Convert to IST (UTC+5:30)
+    ist = pytz.timezone('Asia/Kolkata')
+    current_ist = current_time.astimezone(ist)
+    
+    if current_ist.weekday() > 4:  # Sat/Sun (0=Mon, 4=Fri)
         return False
-    start = current_time.replace(hour=9, minute=15, second=0, microsecond=0)
-    end = current_time.replace(hour=15, minute=30, second=0, microsecond=0)
-    return start <= current_time <= end
+    start = current_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    end = current_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    return start <= current_ist <= end
 
 def detect_patterns(df):
     """Expanded pattern recognition"""
