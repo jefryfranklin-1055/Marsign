@@ -1,4 +1,6 @@
 streamlit
-requests
+streamlit-autorefresh
+upstox-client
 pandas
-yfinance
+numpy
+TA-Lib
