@@ -1,6 +1,6 @@
 streamlit
 streamlit-autorefresh
-upstox-client
+upstox-python-sdk
 pandas
 numpy
 TA-Lib
