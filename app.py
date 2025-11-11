@@ -60,7 +60,8 @@ for key, default in {
     'last_signal_time': None,
     'last_signal_key': None, # To prevent signal spam
     'hoz_range': None,
-    'hoz_signal_given': False
+    'hoz_signal_given': False,
+    'eod_signal_given': False # **NEW** Flag for EOD signal
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -100,6 +101,131 @@ def get_historical_candles(instrument_key, interval, from_date, to_date):
         df['volume'] = df['volume'].replace(0, 1)
         return df.set_index("timestamp").sort_index()
     return pd.DataFrame()
+
+# --- **NEW** EOD Analysis Functions ---
+
+def get_daily_candle_data(instrument_key):
+    """Fetches the single daily candle for today."""
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+    api_instance = upstox_client.HistoryApi(api_client)
+    response = get_api_data(api_instance.get_historical_candle_data1, 
+                            instrument_key=instrument_key, 
+                            interval="day", 
+                            from_date=today_str, 
+                            to_date=today_str, 
+                            api_version="2.0")
+    if response and hasattr(response, 'data') and response.data.candles:
+        # The API returns a list, even for one candle
+        candle = response.data.candles[0]
+        # Columns: "timestamp", "open", "high", "low", "close", "volume", "oi"
+        return {"open": candle[1], "high": candle[2], "low": candle[3], "close": candle[4]}
+    return None
+
+def get_closing_range_percent(day_candle):
+    """Calculates the closing range percentage. 0 = at low, 100 = at high."""
+    if not day_candle: return 50 # Default to neutral
+    day_range = day_candle['high'] - day_candle['low']
+    if day_range == 0: return 50
+    close_relative = day_candle['close'] - day_candle['low']
+    return (close_relative / day_range) * 100
+
+def generate_eod_signal(signal_text, strategy_name):
+    """Generates and logs the special End-of-Day signal."""
+    now = datetime.now(IST)
+    signal_time = now.strftime('%I:%M %p')
+    
+    log_entry = {
+        'Time': signal_time, 
+        'Strategy': strategy_name, 
+        'Signal': signal_text,
+        'Nifty Spot': f"{st.session_state.nifty_spot:.2f}"
+    }
+    
+    st.session_state.signal_log.insert(0, log_entry) # Add to top of the log
+    st.session_state.signal_count += 1
+    st.session_state.eod_signal_given = True # Set the flag
+    
+    st.info(f"🔔 **EOD ANALYSIS: {signal_text}**")
+
+def analyze_eod_sentiment():
+    """Runs after 3:20 PM to predict next day's gap."""
+    if st.session_state.eod_signal_given:
+        st.session_state.active_strategy_msg = "EOD Signal already generated."
+        return # Signal already given for today
+
+    st.session_state.active_strategy_msg = "Analyzing EOD Sentiment..."
+    
+    sentiment_score = 0
+    
+    try:
+        # 1. Get Nifty Daily Data & Closing Range
+        nifty_day_candle = get_daily_candle_data(SPOT_INSTRUMENT)
+        if not nifty_day_candle:
+            st.warning("Could not get Nifty daily candle for EOD analysis.")
+            return
+            
+        nifty_closing_range_pct = get_closing_range_percent(nifty_day_candle)
+        if nifty_closing_range_pct > 80: sentiment_score += 2  # Top 20%
+        elif nifty_closing_range_pct < 20: sentiment_score -= 2 # Bottom 20%
+        
+        # 2. Get 1-Hour Nifty RSI
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        from_date_str = (datetime.now(IST) - timedelta(days=5)).strftime("%Y-%m-%d")
+        candles_1h = get_historical_candles(SPOT_INSTRUMENT, "60minute", from_date_str, today_str)
+        
+        if not candles_1h.empty and len(candles_1h) > 14:
+            # Update last candle with current spot
+            last_ts = candles_1h.index[-1]
+            current_ts_hour_naive = datetime.now(IST).replace(minute=0, second=0, microsecond=0, tzinfo=None)
+            nifty_spot = st.session_state.nifty_spot # Get current spot from state
+            
+            if last_ts == current_ts_hour_naive:
+                candles_1h.loc[last_ts, ['close', 'high', 'low']] = [nifty_spot, max(candles_1h.loc[last_ts, 'high'], nifty_spot), min(candles_1h.loc[last_ts, 'low'], nifty_spot)]
+            elif current_ts_hour_naive > last_ts:
+                new_row = pd.DataFrame({'open': candles_1h.iloc[-1]['close'], 'high': nifty_spot, 'low': nifty_spot, 'close': nifty_spot, 'volume': 0, 'oi': 0}, index=[current_ts_hour_naive])
+                candles_1h = pd.concat([candles_1h, new_row])
+                
+            rsi_1h = talib.RSI(candles_1h['close'], timeperiod=14).iloc[-1]
+            if rsi_1h > 65: sentiment_score += 1
+            elif rsi_1h < 35: sentiment_score -= 1
+        
+        # 3. Get VIX Daily Change
+        vix_day_candle = get_daily_candle_data(VIX_INSTRUMENT)
+        if vix_day_candle:
+            vix_change_pct = ((vix_day_candle['close'] - vix_day_candle['open']) / vix_day_candle['open']) * 100
+            if vix_change_pct > 3: sentiment_score -= 2 # Fear increasing
+            elif vix_change_pct < -3: sentiment_score += 1 # Complacency
+            
+        # 4. Get Bank Nifty Confirmation
+        banknifty_day_candle = get_daily_candle_data(BANKNIFTY_INSTRUMENT)
+        if banknifty_day_candle:
+            banknifty_closing_range_pct = get_closing_range_percent(banknifty_day_candle)
+            
+            # Check for divergence
+            if nifty_closing_range_pct > 80 and banknifty_closing_range_pct < 50: # Nifty strong, BN weak
+                sentiment_score -= 1
+            elif nifty_closing_range_pct < 20 and banknifty_closing_range_pct > 50: # Nifty weak, BN strong
+                sentiment_score += 1 
+                
+        # --- Final Score Mapping ---
+        signal_text = ""
+        if sentiment_score >= 3:
+            signal_text = "Strong Gap Up Sentiment (Est. +100 to +150 pts)"
+        elif sentiment_score == 2:
+            signal_text = "Mild Gap Up Sentiment (Est. +50 to +100 pts)"
+        elif sentiment_score in [-1, 0, 1]:
+            signal_text = "Neutral/Flat Sentiment (Est. -50 to +50 pts)"
+        elif sentiment_score == -2:
+            signal_text = "Mild Gap Down Sentiment (Est. -50 to -100 pts)"
+        elif sentiment_score <= -3:
+            signal_text = "Strong Gap Down Sentiment (Est. -100 to -150 pts)"
+
+        # Generate the one-time signal
+        generate_eod_signal(signal_text, "EOD Sentiment Model")
+
+    except Exception as e:
+        st.error(f"Error during EOD analysis: {e}")
+        st.exception(e)
 
 # --- Core Logic ---
 def get_daily_setup_data(_today_str):
@@ -197,7 +323,7 @@ def analyze_for_entry_signal():
         if st.session_state.last_run_day != today_str:
             st.session_state.update(
                 last_run_day=today_str, signal_count=0, signal_log=[],
-                hoz_range=None, hoz_signal_given=False
+                hoz_range=None, hoz_signal_given=False, eod_signal_given=False
             )
         
         pdh, pdl = get_daily_setup_data(today_str)
@@ -409,7 +535,7 @@ today_str = now_ist.strftime("%Y-%m-%d")
 if st.session_state.last_run_day != today_str:
     st.session_state.update(
         last_run_day=today_str, signal_count=0, signal_log=[], 
-        hoz_range=None, hoz_signal_given=False
+        hoz_range=None, hoz_signal_given=False, eod_signal_given=False # **MODIFIED**
     )
 
 # --- Dynamic Refresh ---
@@ -467,11 +593,19 @@ try:
         
     with st.spinner(spinner_message):
         market_open, market_close = now_ist.replace(hour=9, minute=15), now_ist.replace(hour=15, minute=30)
+        eod_analysis_start = now_ist.replace(hour=15, minute=20) # **NEW** EOD Start Time
+
         # Check if market is open
         if not (market_open <= now_ist <= market_close) or now_ist.strftime("%Y-%m-%d") in NSE_HOLIDAYS_2025:
             st.warning("Market is currently closed (or it's a holiday).")
+        
+        # --- **MODIFIED** Main Logic ---
+        elif now_ist >= eod_analysis_start:
+            # It's time for End-of-Day analysis
+            analyze_eod_sentiment()
         else:
-            analyze_for_entry_signal() # Always analyze for a new signal
+            # It's normal trading time, look for intraday signals
+            analyze_for_entry_signal() 
 
 except Exception as e:
     st.error(f"A critical runtime error occurred: {e}")
