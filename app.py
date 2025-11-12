@@ -102,7 +102,7 @@ def get_historical_candles(instrument_key, interval, from_date, to_date):
         return df.set_index("timestamp").sort_index()
     return pd.DataFrame()
 
-# --- **NEW** EOD Analysis Functions ---
+# --- EOD Analysis Functions ---
 
 def get_daily_candle_data(instrument_key):
     """Fetches the single daily candle for today."""
@@ -401,9 +401,9 @@ def analyze_for_entry_signal():
         st.session_state.bull_fvgs, st.session_state.bear_fvgs = find_fvgs(candles_1m)
         st.session_state.last_fvg_scan_time = now_ist.replace(tzinfo=None)
     
-    # --- Contextual Confirmations ---
-    bullish_confirmation = is_obv_rising or banknifty_trend_up
-    bearish_confirmation = not is_obv_rising or not banknifty_trend_up
+    # --- Contextual Confirmations (CHANGED to 'AND') ---
+    bullish_confirmation = is_obv_rising and banknifty_trend_up
+    bearish_confirmation = not is_obv_rising and not banknifty_trend_up
     
     # --- Hero or Zero Logic ---
     if is_expiry_day and now_ist.time() >= datetime.strptime("14:00", "%H:%M").time() and st.session_state.strategy_hero_enabled and not st.session_state.hoz_signal_given:
@@ -535,7 +535,7 @@ today_str = now_ist.strftime("%Y-%m-%d")
 if st.session_state.last_run_day != today_str:
     st.session_state.update(
         last_run_day=today_str, signal_count=0, signal_log=[], 
-        hoz_range=None, hoz_signal_given=False, eod_signal_given=False # **MODIFIED**
+        hoz_range=None, hoz_signal_given=False, eod_signal_given=False
     )
 
 # --- Dynamic Refresh ---
@@ -593,13 +593,13 @@ try:
         
     with st.spinner(spinner_message):
         market_open, market_close = now_ist.replace(hour=9, minute=15), now_ist.replace(hour=15, minute=30)
-        eod_analysis_start = now_ist.replace(hour=15, minute=20) # **NEW** EOD Start Time
+        eod_analysis_start = now_ist.replace(hour=15, minute=20) # EOD Start Time
 
         # Check if market is open
         if not (market_open <= now_ist <= market_close) or now_ist.strftime("%Y-%m-%d") in NSE_HOLIDAYS_2025:
             st.warning("Market is currently closed (or it's a holiday).")
         
-        # --- **MODIFIED** Main Logic ---
+        # --- Main Logic ---
         elif now_ist >= eod_analysis_start:
             # It's time for End-of-Day analysis
             analyze_eod_sentiment()
